@@ -1,0 +1,340 @@
+import React, { useState } from 'react';
+import { 
+  ShieldCheck, 
+  AlertTriangle, 
+  XCircle, 
+  Search, 
+  Info, 
+  Link as LinkIcon, 
+  CheckCircle,
+  ShieldAlert
+} from 'lucide-react';
+
+// Common URL shorteners
+const SHORTENERS = [
+  'bit.ly', 'tinyurl.com', 't.co', 'goo.gl', 'ow.ly', 'is.gd', 'buff.ly', 
+  'adf.ly', 'cutt.ly', 's.id', 'shorturl.at'
+];
+
+// High-risk Top Level Domains (TLDs) often abused by scammers
+const SUSPICIOUS_TLDS = [
+  '.tk', '.ml', '.ga', '.cf', '.gq', '.xyz', '.top', '.pw', '.cc', '.club', '.zip', '.mov'
+];
+
+// Keywords commonly found in phishing URLs
+const SUSPICIOUS_KEYWORDS = [
+  'login', 'signin', 'verify', 'update', 'secure', 'account', 'banking', 
+  'auth', 'wallet', 'free', 'gift', 'support', 'recovery', 'password', 'service'
+];
+
+export default function App() {
+  const [inputUrl, setInputUrl] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [results, setResults] = useState(null);
+
+  const analyzeUrl = (e) => {
+    e.preventDefault();
+    if (!inputUrl.trim()) return;
+
+    setAnalyzing(true);
+    setResults(null);
+
+    // Simulate a slight network delay for better UX
+    setTimeout(() => {
+      runHeuristics(inputUrl.trim());
+      setAnalyzing(false);
+    }, 800);
+  };
+
+  const runHeuristics = (rawUrl) => {
+    let urlToAnalyze = rawUrl;
+    let findings = [];
+    let riskScore = 0; // 0 = Safe, 100 = Extremely Malicious
+
+    // 1. Basic format check and Protocol insertion
+    if (!/^https?:\/\//i.test(urlToAnalyze)) {
+      urlToAnalyze = 'http://' + urlToAnalyze;
+    }
+
+    let urlObj;
+    try {
+      urlObj = new URL(urlToAnalyze);
+    } catch (err) {
+      setResults({
+        error: true,
+        message: "Invalid URL format. Please enter a valid link."
+      });
+      return;
+    }
+
+    const { hostname, pathname, protocol, username, search } = urlObj;
+    const fullString = urlObj.toString();
+
+    // 2. Protocol Check (HTTPS vs HTTP)
+    if (protocol === 'http:') {
+      riskScore += 25;
+      findings.push({
+        type: 'warning',
+        title: 'Unencrypted Connection (HTTP)',
+        desc: 'This link uses HTTP instead of the secure HTTPS. Data sent over this connection can be intercepted. Never enter passwords or credit cards on an HTTP site.'
+      });
+    } else {
+      findings.push({
+        type: 'safe',
+        title: 'Secure Connection (HTTPS)',
+        desc: 'The link uses encryption to protect data in transit.'
+      });
+    }
+
+    // 3. IP Address instead of Domain
+    const ipRegex = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/;
+    if (ipRegex.test(hostname)) {
+      riskScore += 60;
+      findings.push({
+        type: 'danger',
+        title: 'IP Address Used as Domain',
+        desc: `Legitimate websites rarely use raw IP addresses (${hostname}) in their links. This is a common tactic to hide the true destination of a server.`
+      });
+    }
+
+    // 4. Presence of Credentials in URL (Basic Auth spoofing)
+    if (username) {
+      riskScore += 70;
+      findings.push({
+        type: 'danger',
+        title: 'Hidden Domain Tactic (@ symbol)',
+        desc: `The link contains credentials before an "@" symbol. Browsers will ignore everything before the "@" and take you to the actual domain. Scammers use this to make a link look like a trusted site (e.g., google.com@scammer.com).`
+      });
+    }
+
+    // 5. URL Shorteners
+    const isShortener = SHORTENERS.some(s => hostname.includes(s));
+    if (isShortener) {
+      riskScore += 30;
+      findings.push({
+        type: 'warning',
+        title: 'URL Shortener Detected',
+        desc: 'This is a shortened link. It hides the final destination, making it impossible to know where you are actually going until you click it. Proceed with caution.'
+      });
+    }
+
+    // 6. Suspicious TLDs
+    const tldMatch = hostname.match(/\.[a-z0-9]+$/i);
+    if (tldMatch) {
+      const tld = tldMatch[0].toLowerCase();
+      if (SUSPICIOUS_TLDS.includes(tld)) {
+        riskScore += 40;
+        findings.push({
+          type: 'danger',
+          title: `Suspicious Top-Level Domain (${tld})`,
+          desc: `The domain extension ${tld} is frequently offered for free or very cheap, making it a favorite among scammers and cybercriminals.`
+        });
+      }
+    }
+
+    // 7. Keyword Stuffing / Deceptive Subdomains
+    const suspiciousWordsFound = SUSPICIOUS_KEYWORDS.filter(word => 
+      hostname.toLowerCase().includes(word) || pathname.toLowerCase().includes(word)
+    );
+    
+    if (suspiciousWordsFound.length > 0) {
+      riskScore += 20 * Math.min(suspiciousWordsFound.length, 3);
+      findings.push({
+        type: 'warning',
+        title: 'Suspicious Keywords Found',
+        desc: `The link contains words often used to create a sense of urgency or fake legitimacy: ${suspiciousWordsFound.join(', ')}.`
+      });
+    }
+
+    // 8. Unusually Long URLs
+    if (fullString.length > 100) {
+      riskScore += 15;
+      findings.push({
+        type: 'info',
+        title: 'Unusually Long Link',
+        desc: 'This link is very long. While not inherently malicious, attackers sometimes use extremely long URLs to hide the actual domain name or include malicious scripts.'
+      });
+    }
+
+    // 9. Too many subdomains (e.g., login.paypal.com.scam.net)
+    const domainParts = hostname.split('.');
+    if (domainParts.length > 4 && !ipRegex.test(hostname)) {
+      riskScore += 35;
+      findings.push({
+        type: 'danger',
+        title: 'Excessive Subdomains',
+        desc: `The link has many subdomains (${hostname}). Scammers use this to bury their actual domain at the very end, tricking you into reading only the first part.`
+      });
+    }
+
+    // Cap score at 100
+    riskScore = Math.min(riskScore, 100);
+
+    // Provide a baseline safe message if nothing is found
+    if (findings.filter(f => f.type !== 'safe').length === 0) {
+      findings.push({
+        type: 'safe',
+        title: 'No obvious structural red flags',
+        desc: 'The structure of this URL looks standard. However, always ensure you trust the sender and the domain itself.'
+      });
+    }
+
+    setResults({
+      parsedUrl: fullString,
+      hostname: hostname,
+      score: riskScore,
+      findings: findings.sort((a, b) => {
+        const order = { danger: 1, warning: 2, info: 3, safe: 4 };
+        return order[a.type] - order[b.type];
+      })
+    });
+  };
+
+  const getRiskLevel = (score) => {
+    if (score === 0) return { label: 'Looks Safe (Structurally)', color: 'text-emerald-500', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', icon: ShieldCheck };
+    if (score < 40) return { label: 'Suspicious / Proceed with Caution', color: 'text-yellow-500', bg: 'bg-yellow-500/10', border: 'border-yellow-500/20', icon: AlertTriangle };
+    return { label: 'High Risk / Likely Malicious', color: 'text-red-500', bg: 'bg-red-500/10', border: 'border-red-500/20', icon: ShieldAlert };
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-200 font-sans p-4 md:p-8">
+      <div className="max-w-3xl mx-auto space-y-8">
+        
+        {/* Header */}
+        <div className="text-center space-y-4 pt-8">
+          <div className="inline-flex items-center justify-center p-3 bg-indigo-500/10 rounded-2xl mb-2 border border-indigo-500/20">
+            <Search className="w-8 h-8 text-indigo-400" />
+          </div>
+          <h1 className="text-3xl md:text-4xl font-bold text-white tracking-tight">Netwatch</h1>
+          <p className="text-slate-400 max-w-xl mx-auto">
+            Paste a suspicious link below to scan its structure for common phishing tactics, scams, and deceptive patterns.
+          </p>
+        </div>
+
+        {/* Input Area */}
+        <div className="bg-slate-800 rounded-2xl shadow-xl border border-slate-700 p-2">
+          <form onSubmit={analyzeUrl} className="flex flex-col md:flex-row gap-2">
+            <div className="relative flex-1">
+              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                <LinkIcon className="h-5 w-5 text-slate-500" />
+              </div>
+              <input
+                type="text"
+                value={inputUrl}
+                onChange={(e) => setInputUrl(e.target.value)}
+                placeholder="e.g., http://login.secure-update.xyz/auth"
+                className="w-full bg-slate-900 border-none text-white rounded-xl pl-12 pr-4 py-4 focus:ring-2 focus:ring-indigo-500 focus:outline-none placeholder-slate-600"
+                required
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={analyzing || !inputUrl.trim()}
+              className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium px-8 py-4 rounded-xl transition-colors flex items-center justify-center gap-2 whitespace-nowrap"
+            >
+              {analyzing ? (
+                <>
+                  <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                  Analyzing...
+                </>
+              ) : (
+                'Analyze Link'
+              )}
+            </button>
+          </form>
+        </div>
+
+        {/* Error State */}
+        {results?.error && (
+          <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-start gap-3 text-red-400">
+            <XCircle className="w-5 h-5 mt-0.5 flex-shrink-0" />
+            <p>{results.message}</p>
+          </div>
+        )}
+
+        {/* Results Area */}
+        {results && !results.error && (
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            
+            {/* Main Score Card */}
+            <div className={`rounded-2xl border p-6 flex flex-col md:flex-row items-center gap-6 ${getRiskLevel(results.score).bg} ${getRiskLevel(results.score).border}`}>
+              <div className="flex-shrink-0 relative">
+                <svg className="w-32 h-32 transform -rotate-90">
+                  <circle cx="64" cy="64" r="56" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-slate-800" />
+                  <circle 
+                    cx="64" cy="64" r="56" 
+                    stroke="currentColor" 
+                    strokeWidth="8" 
+                    fill="transparent" 
+                    strokeDasharray="351.858" 
+                    strokeDashoffset={351.858 - (351.858 * (results.score === 0 ? 10 : results.score)) / 100}
+                    className={`transition-all duration-1000 ease-out ${getRiskLevel(results.score).color}`} 
+                  />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className={`text-3xl font-bold ${getRiskLevel(results.score).color}`}>{results.score}</span>
+                  <span className="text-xs text-slate-400 uppercase tracking-wider mt-1">Risk Score</span>
+                </div>
+              </div>
+              
+              <div className="flex-1 text-center md:text-left space-y-2">
+                <div className="flex items-center justify-center md:justify-start gap-2">
+                  {React.createElement(getRiskLevel(results.score).icon, { className: `w-6 h-6 ${getRiskLevel(results.score).color}` })}
+                  <h2 className={`text-2xl font-bold ${getRiskLevel(results.score).color}`}>
+                    {getRiskLevel(results.score).label}
+                  </h2>
+                </div>
+                <div className="bg-slate-900 rounded-lg p-3 mt-2 break-all border border-slate-700/50">
+                  <span className="text-slate-400 text-sm">Target Domain: </span>
+                  <span className="text-white font-mono">{results.hostname}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Findings List */}
+            <div className="bg-slate-800 rounded-2xl shadow-xl border border-slate-700 overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-700 bg-slate-800/50">
+                <h3 className="text-lg font-semibold text-white">Detailed Analysis</h3>
+              </div>
+              <div className="divide-y divide-slate-700/50">
+                {results.findings.map((finding, idx) => (
+                  <div key={idx} className="p-6 flex gap-4 hover:bg-slate-700/20 transition-colors">
+                    <div className="mt-1 flex-shrink-0">
+                      {finding.type === 'danger' && <XCircle className="w-6 h-6 text-red-500" />}
+                      {finding.type === 'warning' && <AlertTriangle className="w-6 h-6 text-yellow-500" />}
+                      {finding.type === 'info' && <Info className="w-6 h-6 text-blue-400" />}
+                      {finding.type === 'safe' && <CheckCircle className="w-6 h-6 text-emerald-500" />}
+                    </div>
+                    <div>
+                      <h4 className={`font-medium mb-1 ${
+                        finding.type === 'danger' ? 'text-red-400' :
+                        finding.type === 'warning' ? 'text-yellow-400' :
+                        finding.type === 'info' ? 'text-blue-400' :
+                        'text-emerald-400'
+                      }`}>
+                        {finding.title}
+                      </h4>
+                      <p className="text-slate-400 text-sm leading-relaxed">
+                        {finding.desc}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Disclaimer */}
+            <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl p-4 flex gap-3">
+              <Info className="w-5 h-5 text-indigo-400 flex-shrink-0 mt-0.5" />
+              <div className="text-sm text-indigo-200/80 space-y-2">
+                <p><strong>Disclaimer:</strong> This tool analyzes the structural properties of a URL for common scam patterns. It does <strong>not</strong> verify the URL against a live database of known threats.</p>
+                <p>A score of "Safe" only means it lacks obvious structural red flags. Legitimate-looking links can still be malicious if a trusted site has been compromised.</p>
+              </div>
+            </div>
+
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
